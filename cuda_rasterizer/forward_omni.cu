@@ -72,7 +72,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 
 
 // Forward version of 2D covariance matrix computation
-__device__ float3 computeOmniCov2D(const float3& mean, float focal_x, float focal_y, float lon, float lat, const float* cov3D, const float* viewmatrix)
+__device__ float3 computeOmniCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
 {
 	// The following models the steps outlined by equations 29
 	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
@@ -80,8 +80,8 @@ __device__ float3 computeOmniCov2D(const float3& mean, float focal_x, float foca
 	// Transposes used to account for row-/column-major conventions.
 	float3 t = transformPoint4x3(mean, viewmatrix);
 	float t_dist = sqrt(t.x*t.x + t.y*t.y + t.z*t.z)+0.0000001f;
-	// float3 mu = {t.x/t_dist, t.y/t_dist, t.z/t_dist};
-	// float deno = pow(mu.x*t.x + mu.y*t.y + mu.z*t.z, 2)+0.0000001f;
+	float3 mu = {t.x/t_dist, t.y/t_dist, t.z/t_dist};
+	float deno = pow(mu.x*t.x + mu.y*t.y + mu.z*t.z, 2)+0.0000001f;
 
 	//// Limitation on the angle!
 	// const float limx = 1.3f * tan_fovx;
@@ -91,33 +91,15 @@ __device__ float3 computeOmniCov2D(const float3& mean, float focal_x, float foca
 	// t.x = min(limx, max(-limx, txtz)) * t.z;
 	// t.y = min(limy, max(-limy, tytz)) * t.z;
 
-	// const float H = 512;
-	// const float W = 1024;
-
-	glm::mat3 S = glm::mat3(
-		cos(lon), 0.0f, -sin(lon),
-		-sin(lat) * sin(lon), -cos(lat), -sin(lat) * cos(lon),
-		cos(lat) * sin(lon), -sin(lat), cos(lat) * cos(lon));
-
 	// glm::mat3 J = glm::mat3(
-	// 	(mu.y*t.y + mu.z*t.z)/deno, -mu.y*t.x/deno, -mu.z*t.x/deno,
-	// 	-mu.x*t.y/deno, (mu.x*t.x + mu.z*t.z)/deno, -mu.z*t.y/deno,
-	// 	-mu.x*t.z/deno, -mu.y*t.z/deno, (mu.x*t.x + mu.y*t.y)/deno);
+	// 	focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
+	// 	0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
+	// 	0, 0, 0);
 
 	glm::mat3 J = glm::mat3(
-		1/ ((cos(lat) + 0.01f) * t_dist) , 0, 0,
-		0, 1/t_dist, 0,
-		0, 0, 0);
-
-	// glm::mat3 J = glm::mat3(
-	// 	1/ (t_dist) , 0, 0,
-	// 	0, 1/t_dist, 0,
-	// 	0, 0, 0);
-
-	// glm::mat3 J = glm::mat3(
-	// 	1/ cos(lat) * (smu.y*s.y + smu.z*s.z)/sdeno, -1/ cos(lat) *  smu.y*s.x/sdeno, -1/ cos(lat) * smu.z*s.x/sdeno,
-	// 	-smu.x*s.y/sdeno, (smu.x*s.x + smu.z*s.z)/sdeno, -smu.z*s.y/sdeno,
-	// 	0, 0, 0);
+		(mu.y*t.y + mu.z*t.z)/deno, -mu.y*t.x/deno, -mu.z*t.x/deno,
+		-mu.x*t.y/deno, (mu.x*t.x + mu.z*t.z)/deno, -mu.z*t.y/deno,
+		-mu.x*t.z/deno, -mu.y*t.z/deno, (mu.x*t.x + mu.y*t.y)/deno);
 
 	// float deno = 1; //pow(mu.x*mu.x + mu.y*mu.y + mu.z*mu.z, 1.5)+0.0000001f;
 	// glm::mat3 J = glm::mat3(
@@ -130,8 +112,7 @@ __device__ float3 computeOmniCov2D(const float3& mean, float focal_x, float foca
 		viewmatrix[1], viewmatrix[5], viewmatrix[9],
 		viewmatrix[2], viewmatrix[6], viewmatrix[10]);
 
-	// glm::mat3 T = W * J;
-	glm::mat3 T = W * S * J;
+	glm::mat3 T = W * J;
 
 	glm::mat3 Vrk = glm::mat3(
 		cov3D[0], cov3D[1], cov3D[2],
@@ -144,11 +125,6 @@ __device__ float3 computeOmniCov2D(const float3& mean, float focal_x, float foca
 	// one pixel wide/high. Discard 3rd row and column.
 	cov[0][0] += 0.3f;
 	cov[1][1] += 0.3f;
-
-	// cov[0][0] = min(1.0f, cov[0][0]);
-	// cov[0][1] = min(1.0f, cov[0][1]);
-	// cov[1][1] = min(1.0f, cov[1][1]);
-
 	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
 }
 
@@ -205,10 +181,6 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 	S[0][0] = mod * scale.x;
 	S[1][1] = mod * scale.y;
 	S[2][2] = mod * scale.z;
-
-	// S[0][0] = min(1.0f, S[0][0]);
-	// S[0][1] = min(1.0f, S[0][1]);
-	// S[1][1] = min(1.0f, S[1][1]);
 
 	// Normalize quaternion to get valid rotation
 	glm::vec4 q = rot;// / glm::length(rot);
@@ -310,7 +282,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Compute 2D screen-space covariance matrix
 	// float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
-	float3 cov = computeOmniCov2D(p_orig, focal_x, focal_y, lon, lat, cov3D, viewmatrix);
+	float3 cov = computeOmniCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
 
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
@@ -346,8 +318,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 
 	// Store some useful helper data for the next steps.
-	depths[idx] = dist;
-	// depths[idx] = p_view.z;
+	depths[idx] = p_view.z;
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
 	// Inverse 2D covariance and opacity neatly pack into one float4
@@ -370,9 +341,7 @@ renderCUDA(
 	float* __restrict__ final_T,
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
-	float* __restrict__ out_color,
-	const float* __restrict__ depth,
-	float* __restrict__ out_depth)
+	float* __restrict__ out_color)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -397,17 +366,12 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
-	__shared__ float collected_depth[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
-
-	// 	float D = 0.0f;  // Mean Depth
-    float D = 15.0f;  // Median Depth. TODO: This is a hack setting max_depth to 15
-
 
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -425,7 +389,6 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
-			collected_depth[block.thread_rank()] = depth[coll_id];
 		}
 		block.sync();
 
@@ -462,17 +425,6 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 
-            // Mean depth:
-			// float dep = collected_depth[j];
-			// D += dep * alpha * T;
-
-            // Median depth:
-            if (T > 0.5f && test_T < 0.5)
-			{
-			    float dep = collected_depth[j];
-				D = dep;
-			}
-
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -489,7 +441,6 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
-		out_depth[pix_id] = D;
 	}
 }
 
@@ -504,9 +455,7 @@ void FORWARD::render(
 	float* final_T,
 	uint32_t* n_contrib,
 	const float* bg_color,
-	float* out_color,
-	const float* depth,
-	float* out_depth)
+	float* out_color)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -518,9 +467,7 @@ void FORWARD::render(
 		final_T,
 		n_contrib,
 		bg_color,
-		out_color,
-		depth,
-		out_depth);
+		out_color);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

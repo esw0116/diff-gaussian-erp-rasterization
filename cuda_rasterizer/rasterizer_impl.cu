@@ -62,7 +62,8 @@ __global__ void checkFrustum(int P,
 		return;
 
 	float3 p_view;
-	present[idx] = in_frustum(idx, orig_points, viewmatrix, projmatrix, false, p_view);
+	// present[idx] = in_frustum(idx, orig_points, viewmatrix, projmatrix, false, p_view);
+	present[idx] = in_sphere(idx, orig_points, viewmatrix, projmatrix, false, p_view);
 }
 
 // Generates one key/value pair for all Gaussian / tile overlaps. 
@@ -216,6 +217,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float* out_color,
+	float* out_depth,
 	int* radii,
 	bool debug)
 {
@@ -330,7 +332,9 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.accum_alpha,
 		imgState.n_contrib,
 		background,
-		out_color), debug)
+		out_color,
+		geomState.depths,
+		out_depth), debug)
 
 	return num_rendered;
 }
@@ -409,7 +413,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
 	const float* cov3D_ptr = (cov3D_precomp != nullptr) ? cov3D_precomp : geomState.cov3D;
-	CHECK_CUDA(BACKWARD::preprocess(P, D, M,
+	CHECK_CUDA(BACKWARD::preprocess(P, D, M, width, height,
 		(float3*)means3D,
 		radii,
 		shs,

@@ -141,7 +141,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 // Backward version of INVERSE 2D covariance matrix computation
 // (due to length launched as separate kernel before other 
 // backward steps contained in preprocess)
-__global__ void computeCov2DCUDA(int P,
+__global__ void computeCov2DCUDA(int P, 
 	const float3* means,
 	const int* radii,
 	const float* cov3Ds,
@@ -164,20 +164,43 @@ __global__ void computeCov2DCUDA(int P,
 	float3 mean = means[idx];
 	float3 dL_dconic = { dL_dconics[4 * idx], dL_dconics[4 * idx + 1], dL_dconics[4 * idx + 3] };
 	float3 t = transformPoint4x3(mean, view_matrix);
-	
-	const float limx = 1.3f * tan_fovx;
-	const float limy = 1.3f * tan_fovy;
-	const float txtz = t.x / t.z;
-	const float tytz = t.y / t.z;
-	t.x = min(limx, max(-limx, txtz)) * t.z;
-	t.y = min(limy, max(-limy, tytz)) * t.z;
-	
-	const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
-	const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
 
-	glm::mat3 J = glm::mat3(h_x / t.z, 0.0f, -(h_x * t.x) / (t.z * t.z),
-		0.0f, h_y / t.z, -(h_y * t.y) / (t.z * t.z),
+	float t_dist = sqrt(t.x*t.x + t.y*t.y + t.z*t.z)+0.0000001f;
+	float t_dist_xz = sqrt(t.x*t.x + t.z*t.z)+0.0000001f;
+	float lat = atan2(-t.y, t_dist_xz);   
+	float lon = atan2(t.x, t.z);
+	
+	const float x_grad_mul = 1;
+	const float y_grad_mul = 1;
+
+	// const float limx = 1.3f * tan_fovx;
+	// const float limy = 1.3f * tan_fovy;
+	// const float txtz = t.x / t.z;
+	// const float tytz = t.y / t.z;
+	// t.x = min(limx, max(-limx, txtz)) * t.z;
+	// t.y = min(limy, max(-limy, tytz)) * t.z;
+	
+	// const float x_grad_mul = txtz < -limx || txtz > limx ? 0 : 1;
+	// const float y_grad_mul = tytz < -limy || tytz > limy ? 0 : 1;
+
+	glm::mat3 J = glm::mat3(
+		1/ ((cos(lat) + 0.01f) * t_dist) , 0, 0,
+		0, 1/t_dist, 0,
 		0, 0, 0);
+
+	// glm::mat3 J = glm::mat3(
+	// 	1/ (t_dist) , 0, 0,
+	// 	0, 1/t_dist, 0,
+	// 	0, 0, 0);
+
+	glm::mat3 S = glm::mat3(
+		cos(lon), 0.0f, -sin(lon),
+		-sin(lat) * sin(lon), -cos(lat), -sin(lat) * cos(lon),
+		cos(lat) * sin(lon), -sin(lat), cos(lat) * cos(lon));
+
+	// glm::mat3 J = glm::mat3(h_x / t.z, 0.0f, -(h_x * t.x) / (t.z * t.z),
+	// 	0.0f, h_y / t.z, -(h_y * t.y) / (t.z * t.z),
+	// 	0, 0, 0);
 
 	glm::mat3 W = glm::mat3(
 		view_matrix[0], view_matrix[4], view_matrix[8],
@@ -189,7 +212,8 @@ __global__ void computeCov2DCUDA(int P,
 		cov3D[1], cov3D[3], cov3D[4],
 		cov3D[2], cov3D[4], cov3D[5]);
 
-	glm::mat3 T = W * J;
+	// glm::mat3 T = W * J;
+	glm::mat3 T = W * S * J;
 
 	glm::mat3 cov2D = glm::transpose(T) * glm::transpose(Vrk) * T;
 
@@ -346,6 +370,7 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 template<int C>
 __global__ void preprocessCUDA(
 	int P, int D, int M,
+	const int W, int H,
 	const float3* means,
 	const int* radii,
 	const float* shs,
@@ -370,17 +395,23 @@ __global__ void preprocessCUDA(
 	float3 m = means[idx];
 
 	// Taking care of gradients from the screenspace points
-	float4 m_hom = transformPoint4x4(m, proj);
-	float m_w = 1.0f / (m_hom.w + 0.0000001f);
-
+	// float4 m_hom = transformPoint4x4(m, proj);
+	// float m_w = 1.0f / (m_hom.w + 0.0000001f);
 	// Compute loss gradient w.r.t. 3D means due to gradients of 2D means
 	// from rendering procedure
+	// glm::vec3 dL_dmean;
+	// float mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
+	// float mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
+	// dL_dmean.x = (proj[0] * m_w - proj[3] * mul1) * dL_dmean2D[idx].x + (proj[1] * m_w - proj[3] * mul2) * dL_dmean2D[idx].y;
+	// dL_dmean.y = (proj[4] * m_w - proj[7] * mul1) * dL_dmean2D[idx].x + (proj[5] * m_w - proj[7] * mul2) * dL_dmean2D[idx].y;
+	// dL_dmean.z = (proj[8] * m_w - proj[11] * mul1) * dL_dmean2D[idx].x + (proj[9] * m_w - proj[11] * mul2) * dL_dmean2D[idx].y;
+
 	glm::vec3 dL_dmean;
-	float mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
-	float mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
-	dL_dmean.x = (proj[0] * m_w - proj[3] * mul1) * dL_dmean2D[idx].x + (proj[1] * m_w - proj[3] * mul2) * dL_dmean2D[idx].y;
-	dL_dmean.y = (proj[4] * m_w - proj[7] * mul1) * dL_dmean2D[idx].x + (proj[5] * m_w - proj[7] * mul2) * dL_dmean2D[idx].y;
-	dL_dmean.z = (proj[8] * m_w - proj[11] * mul1) * dL_dmean2D[idx].x + (proj[9] * m_w - proj[11] * mul2) * dL_dmean2D[idx].y;
+	float dist = sqrt(m.x*m.x + m.y*m.y + m.z*m.z)+0.0000001f;
+	float dist_xz = sqrt(m.x*m.x + m.z*m.z)+0.0000001f;
+	dL_dmean.x = ((W/2-0.5)/M_PI) * (- m.z / (dist_xz * dist_xz)) * dL_dmean2D[idx].x + (-2*(H/2-0.5)/M_PI) * (- m.x * m.y / (dist * dist * dist_xz)) * dL_dmean2D[idx].y;
+	dL_dmean.y = 0 * dL_dmean2D[idx].x + (-2*(H/2-0.5)/M_PI) * (dist_xz / (dist * dist)) * dL_dmean2D[idx].y;
+	dL_dmean.z = ((W/2-0.5)/M_PI) * (m.x / (dist_xz * dist_xz)) * dL_dmean2D[idx].x + (-2*(H/2-0.5)/M_PI) * (- m.z * m.y / (dist * dist * dist_xz)) * dL_dmean2D[idx].y;
 
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
@@ -558,6 +589,7 @@ renderCUDA(
 
 void BACKWARD::preprocess(
 	int P, int D, int M,
+	const int W, int H,
 	const float3* means3D,
 	const int* radii,
 	const float* shs,
@@ -602,7 +634,7 @@ void BACKWARD::preprocess(
 	// propagate color gradients to SH (if desireD), propagate 3D covariance
 	// matrix gradients to scale and rotation.
 	preprocessCUDA<NUM_CHANNELS> << < (P + 255) / 256, 256 >> > (
-		P, D, M,
+		P, D, M, W, H,
 		(float3*)means3D,
 		radii,
 		shs,
